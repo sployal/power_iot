@@ -1,94 +1,66 @@
 "use client";
 
 /**
- * ESP32 Light Control Dashboard
- * ─────────────────────────────────────────────────────────────────────────────
- * SUPABASE SETUP — run this SQL in your Supabase SQL editor:
+ * ═══════════════════════════════════════════════════════════════════════════════
+ *  ESP32 LIGHT CONTROL — LIVE DASHBOARD
+ * ═══════════════════════════════════════════════════════════════════════════════
  *
- *   create table sensor_readings (
- *     id            bigserial primary key,
- *     created_at    timestamptz default now(),
- *     ldr_value     int         not null,
- *     relay1_state  boolean     not null default false,
- *     relay2_state  boolean     not null default false
- *   );
+ *  SUPABASE SETUP — run this SQL in your Supabase SQL editor:
  *
- *   create table device_controls (
- *     id             int primary key default 1,
- *     relay1_manual  boolean  default false,
- *     relay1_state   boolean  default false,
- *     relay2_manual  boolean  default false,
- *     relay2_state   boolean  default false,
- *     on_hour        int      default -1,
- *     on_min         int      default -1,
- *     off_hour       int      default -1,
- *     off_min        int      default -1,
- *     schedule_set   boolean  default false,
- *     ldr_threshold  int      default 1600,
- *     updated_at     timestamptz default now()
- *   );
- *   insert into device_controls (id) values (1);
+ *  create table sensor_readings (
+ *    id            bigserial primary key,
+ *    created_at    timestamptz default now(),
+ *    ldr_value     int         not null,
+ *    relay1_state  boolean     not null default false,
+ *    relay2_state  boolean     not null default false
+ *  );
  *
- *   create table power_settings (
- *     id              int primary key default 1,
- *     relay1_watts    numeric default 60,
- *     relay2_watts    numeric default 100,
- *     tariff_per_kwh  numeric default 0.12,
- *     currency        text    default 'USD'
- *   );
- *   insert into power_settings (id) values (1);
+ *  create table device_controls (
+ *    id             int primary key default 1,
+ *    relay1_manual  boolean  default false,
+ *    relay1_state   boolean  default false,
+ *    relay2_manual  boolean  default false,
+ *    relay2_state   boolean  default false,
+ *    on_hour        int      default -1,
+ *    on_min         int      default -1,
+ *    off_hour       int      default -1,
+ *    off_min        int      default -1,
+ *    schedule_set   boolean  default false,
+ *    ldr_threshold  int      default 1600,
+ *    updated_at     timestamptz default now()
+ *  );
+ *  insert into device_controls (id) values (1);
  *
- * ─────────────────────────────────────────────────────────────────────────────
- * ESP32 Arduino snippet — post a reading every ~5 s & poll controls:
+ *  create table power_settings (
+ *    id              int primary key default 1,
+ *    relay1_watts    numeric default 60,
+ *    relay2_watts    numeric default 100,
+ *    tariff_per_kwh  numeric default 0.12,
+ *    currency        text    default 'USD'
+ *  );
+ *  insert into power_settings (id) values (1);
  *
- *   #include <HTTPClient.h>
- *   #include <ArduinoJson.h>
- *   const char* SB_URL = "https://YOUR-PROJECT.supabase.co/rest/v1/";
- *   const char* SB_KEY = "your-anon-key";
+ *  ── Supabase Row Level Security (optional but recommended) ──────────────────
+ *  Enable RLS on all tables, then add policies:
+ *  For sensor_readings: allow INSERT/SELECT with anon key
+ *  For device_controls: allow SELECT/UPDATE with anon key
+ *  For power_settings:  allow SELECT/UPDATE with anon key
  *
- *   void postReading(int ldr, bool r1, bool r2) {
- *     HTTPClient http;
- *     http.begin(String(SB_URL) + "sensor_readings");
- *     http.addHeader("Content-Type",  "application/json");
- *     http.addHeader("apikey",        SB_KEY);
- *     http.addHeader("Authorization", String("Bearer ") + SB_KEY);
- *     StaticJsonDocument<128> doc;
- *     doc["ldr_value"] = ldr; doc["relay1_state"] = r1; doc["relay2_state"] = r2;
- *     String body; serializeJson(doc, body);
- *     http.POST(body); http.end();
- *   }
- *
- *   void pollControls() {               // call every loop tick
- *     HTTPClient http;
- *     http.begin(String(SB_URL) + "device_controls?id=eq.1&select=*");
- *     http.addHeader("apikey", SB_KEY);
- *     http.addHeader("Authorization", String("Bearer ") + SB_KEY);
- *     if (http.GET() == 200) {
- *       StaticJsonDocument<512> doc;
- *       deserializeJson(doc, http.getString());
- *       JsonObject row = doc[0];
- *       relay1State    = row["relay1_state"].as<bool>();
- *       relay2State    = row["relay2_state"].as<bool>();
- *       ldrThreshold   = row["ldr_threshold"].as<int>();
- *       bool sched     = row["schedule_set"].as<bool>();
- *       if (sched) {
- *         onHour = row["on_hour"]; onMin = row["on_min"];
- *         offHour= row["off_hour"]; offMin= row["off_min"];
- *         scheduleSet = true;
- *       }
- *     }
- *     http.end();
- *   }
+ *  ── Environment Variables (.env.local) ─────────────────────────────────────
+ *  NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
+ *  NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
+ * ═══════════════════════════════════════════════════════════════════════════════
  */
 
-import { useEffect, useState, useCallback } from "react";
-import { createClient } from "@supabase/supabase-js";
+import { useEffect, useState, useCallback, useRef } from "react";
+import { createClient, RealtimeChannel } from "@supabase/supabase-js";
 
+// ── Supabase client ────────────────────────────────────────────────────────────
 const SUPABASE_URL      = process.env.NEXT_PUBLIC_SUPABASE_URL      ?? "https://your-project.supabase.co";
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "your-anon-key";
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-// ── Types ─────────────────────────────────────────────────────────────────────
+// ── Types ──────────────────────────────────────────────────────────────────────
 interface SensorReading {
   id: number;
   created_at: string;
@@ -116,8 +88,8 @@ interface PowerSettings {
   currency: string;
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-const pad2 = (n: number) => String(n).padStart(2, "0");
+// ── Utility ────────────────────────────────────────────────────────────────────
+const p2 = (n: number) => String(n).padStart(2, "0");
 
 function calcPower(readings: SensorReading[], ps: PowerSettings) {
   if (readings.length < 2) return { kwh: 0, cost: 0, r1h: 0, r2h: 0 };
@@ -133,90 +105,106 @@ function calcPower(readings: SensorReading[], ps: PowerSettings) {
   return { kwh, cost: kwh * ps.tariff_per_kwh, r1h, r2h };
 }
 
-// ── Tiny components ───────────────────────────────────────────────────────────
-function Pulse({ on }: { on: boolean }) {
+// ── Sub-components ─────────────────────────────────────────────────────────────
+function LiveDot({ on }: { on: boolean }) {
   return (
     <span className="relative flex h-2.5 w-2.5 shrink-0">
-      {on && <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-60" />}
-      <span className={`relative inline-flex rounded-full h-2.5 w-2.5 ${on ? "bg-emerald-500" : "bg-slate-300"}`} />
+      {on && <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-lime-400 opacity-70" />}
+      <span className={`relative inline-flex rounded-full h-2.5 w-2.5 ${on ? "bg-lime-500" : "bg-zinc-500"}`} />
     </span>
   );
 }
 
-function Card({ children, className = "" }: { children: React.ReactNode; className?: string }) {
+function GlassCard({ children, className = "" }: { children: React.ReactNode; className?: string }) {
   return (
-    <div className={`bg-white rounded-2xl border border-slate-100 shadow-[0_2px_20px_rgba(0,0,0,0.05)] ${className}`}>
+    <div className={`rounded-2xl border border-white/10 bg-white/5 backdrop-blur-md shadow-xl ${className}`}>
       {children}
     </div>
   );
 }
 
-function Label({ children }: { children: React.ReactNode }) {
-  return <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2">{children}</p>;
-}
-
-function Toggle({ on, onChange, disabled }: { on: boolean; onChange: () => void; disabled?: boolean }) {
+function RelayToggle({ on, onChange, loading }: { on: boolean; onChange: () => void; loading?: boolean }) {
   return (
     <button
-      onClick={onChange} disabled={disabled} aria-pressed={on}
-      className={`relative flex h-7 w-12 shrink-0 items-center rounded-full border-2 transition-colors duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 disabled:opacity-40 disabled:cursor-not-allowed ${
-        on ? "border-blue-500 bg-blue-500" : "border-slate-200 bg-slate-100"
-      }`}
+      onClick={onChange}
+      disabled={loading}
+      aria-pressed={on}
+      className={`relative flex h-8 w-14 items-center rounded-full border-2 transition-all duration-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-lime-400 disabled:opacity-40 disabled:cursor-not-allowed
+        ${on ? "border-lime-400 bg-lime-500/20 shadow-[0_0_14px_2px_rgba(132,204,22,0.3)]" : "border-white/20 bg-white/5"}
+      `}
     >
-      <span
-        style={{ width: 20, height: 20 }}
-        className={`inline-block rounded-full bg-white shadow-sm transition-transform duration-200 ease-in-out ml-0.5 ${
-          on ? "translate-x-[18px]" : "translate-x-0"
-        }`}
-      />
+      {loading ? (
+        <span className="mx-auto w-4 h-4 rounded-full border-2 border-white/30 border-t-white animate-spin" />
+      ) : (
+        <span className={`inline-block h-5 w-5 rounded-full transition-transform duration-300 ease-[cubic-bezier(.68,-0.55,.27,1.55)] ml-1
+          ${on ? "translate-x-[22px] bg-lime-400 shadow-[0_0_8px_rgba(132,204,22,0.8)]" : "translate-x-0 bg-white/40"}
+        `} />
+      )}
     </button>
   );
 }
 
 function Sparkline({ data, threshold }: { data: number[]; threshold: number }) {
   if (data.length < 2) return (
-    <div className="h-16 flex items-center justify-center">
-      <span className="text-xs text-slate-300">Awaiting data…</span>
+    <div className="h-20 flex items-center justify-center text-xs text-white/20 font-mono">
+      — awaiting data —
     </div>
   );
-  const W = 300, H = 64;
+  const W = 400, H = 72;
   const pts = data.map((v, i) => `${(i / (data.length - 1)) * W},${H - (v / 4095) * H}`);
   const ty  = H - (threshold / 4095) * H;
+  const last = data[data.length - 1];
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full" preserveAspectRatio="none">
       <defs>
-        <linearGradient id="sg" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#3b82f6" stopOpacity="0.15" />
-          <stop offset="100%" stopColor="#3b82f6" stopOpacity="0" />
+        <linearGradient id="ldrGrad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#a3e635" stopOpacity="0.3"/>
+          <stop offset="100%" stopColor="#a3e635" stopOpacity="0"/>
         </linearGradient>
+        <filter id="glow">
+          <feGaussianBlur stdDeviation="2" result="blur"/>
+          <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+        </filter>
       </defs>
       {[0.25, 0.5, 0.75].map(f => (
-        <line key={f} x1="0" y1={f * H} x2={W} y2={f * H} stroke="#f1f5f9" strokeWidth="1" />
+        <line key={f} x1="0" y1={f*H} x2={W} y2={f*H} stroke="rgba(255,255,255,0.05)" strokeWidth="1"/>
       ))}
-      <path d={`M0,${H} L${pts.join(" L")} L${W},${H} Z`} fill="url(#sg)" />
-      <polyline points={pts.join(" ")} fill="none" stroke="#3b82f6" strokeWidth="1.8"
-        strokeLinejoin="round" strokeLinecap="round" />
-      <line x1="0" y1={ty} x2={W} y2={ty} stroke="#f97316" strokeWidth="1.2"
-        strokeDasharray="5,3" opacity="0.7" />
-      <circle cx={W} cy={H - (data[data.length - 1] / 4095) * H} r="3.5" fill="#3b82f6" />
+      <path d={`M0,${H} L${pts.join(" L")} L${W},${H} Z`} fill="url(#ldrGrad)"/>
+      <polyline points={pts.join(" ")} fill="none" stroke="#a3e635" strokeWidth="2"
+        strokeLinejoin="round" strokeLinecap="round" filter="url(#glow)"/>
+      <line x1="0" y1={ty} x2={W} y2={ty} stroke="#f97316" strokeWidth="1.5"
+        strokeDasharray="6,4" opacity="0.6"/>
+      <circle cx={W} cy={H - (last / 4095) * H} r="4" fill="#a3e635"
+        filter="url(#glow)"/>
     </svg>
   );
 }
 
-// ── Main Dashboard ────────────────────────────────────────────────────────────
-export default function Dashboard() {
-  const [latest,   setLatest]   = useState<SensorReading | null>(null);
-  const [controls, setControls] = useState<DeviceControls | null>(null);
-  const [history,  setHistory]  = useState<SensorReading[]>([]);
-  const [power,    setPower]    = useState<PowerSettings>({ relay1_watts: 60, relay2_watts: 100, tariff_per_kwh: 0.12, currency: "USD" });
+function StatBadge({ label, value, sub, accent }: { label: string; value: string; sub?: string; accent?: string }) {
+  return (
+    <GlassCard className="p-4 flex flex-col gap-1">
+      <span className="text-[9px] font-bold uppercase tracking-[0.2em] text-white/30">{label}</span>
+      <span className={`text-2xl font-black font-mono leading-none ${accent ?? "text-white"}`}>{value}</span>
+      {sub && <span className="text-[10px] text-white/30 font-mono">{sub}</span>}
+    </GlassCard>
+  );
+}
 
+// ── Main Dashboard ─────────────────────────────────────────────────────────────
+export default function Dashboard() {
+  const [latest,    setLatest]    = useState<SensorReading | null>(null);
+  const [controls,  setControls]  = useState<DeviceControls | null>(null);
+  const [history,   setHistory]   = useState<SensorReading[]>([]);
+  const [power,     setPower]     = useState<PowerSettings>({ relay1_watts: 60, relay2_watts: 100, tariff_per_kwh: 0.12, currency: "USD" });
   const [online,    setOnline]    = useState(false);
+  const [lastSeen,  setLastSeen]  = useState<string | null>(null);
+  const [tab,       setTab]       = useState<"overview" | "schedule" | "power">("overview");
+
   const [loadingR1, setLoadingR1] = useState(false);
   const [loadingR2, setLoadingR2] = useState(false);
-  const [tab, setTab] = useState<"overview" | "schedule" | "power">("overview");
 
-  // Schedule form
-  const [sched,      setSched]      = useState({ onH: "", onM: "", offH: "", offM: "" });
+  // Schedule
+  const [sched,       setSched]       = useState({ onH: "", onM: "", offH: "", offM: "" });
   const [schedSaving, setSchedSaving] = useState(false);
   const [schedMsg,    setSchedMsg]    = useState<{ ok: boolean; text: string } | null>(null);
 
@@ -229,47 +217,84 @@ export default function Dashboard() {
   const [pwrEditing, setPwrEditing] = useState(false);
   const [pwrSaving,  setPwrSaving]  = useState(false);
 
-  // ── Load initial data ─────────────────────────────────────────────────────
+  // Connection watchdog: if no reading for 30 s, mark offline
+  const watchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const resetWatchdog = useCallback(() => {
+    if (watchdogRef.current) clearTimeout(watchdogRef.current);
+    watchdogRef.current = setTimeout(() => setOnline(false), 30_000);
+  }, []);
+
+  // ── Initial load ──────────────────────────────────────────────────────────
   const fetchAll = useCallback(async () => {
-    const [{ data: rows }, { data: ctrl }, { data: ps }] = await Promise.all([
-      supabase.from("sensor_readings").select("*").order("created_at", { ascending: false }).limit(40),
+    const [{ data: rows, error: rowErr }, { data: ctrl }, { data: ps }] = await Promise.all([
+      supabase.from("sensor_readings").select("*").order("created_at", { ascending: false }).limit(60),
       supabase.from("device_controls").select("*").eq("id", 1).single(),
       supabase.from("power_settings").select("*").eq("id", 1).single(),
     ]);
-    if (rows?.length) { setLatest(rows[0]); setHistory([...rows].reverse()); setOnline(true); }
-    if (ctrl) { setControls(ctrl); setThrInput(String(ctrl.ldr_threshold)); }
-    if (ps)   { setPower(ps); setPwrForm({ r1w: String(ps.relay1_watts), r2w: String(ps.relay2_watts), tariff: String(ps.tariff_per_kwh), currency: ps.currency }); }
-  }, []);
 
+    if (!rowErr && rows?.length) {
+      setLatest(rows[0]);
+      setHistory([...rows].reverse());
+      setOnline(true);
+      setLastSeen(new Date(rows[0].created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }));
+      resetWatchdog();
+    }
+    if (ctrl) {
+      setControls(ctrl);
+      setThrInput(String(ctrl.ldr_threshold));
+    }
+    if (ps) {
+      setPower(ps);
+      setPwrForm({ r1w: String(ps.relay1_watts), r2w: String(ps.relay2_watts), tariff: String(ps.tariff_per_kwh), currency: ps.currency });
+    }
+  }, [resetWatchdog]);
+
+  // ── Realtime subscription ─────────────────────────────────────────────────
   useEffect(() => {
     fetchAll();
-    const ch = supabase.channel("esp32")
-      .on("postgres_changes", { event: "INSERT", schema: "public", table: "sensor_readings" }, (p) => {
-        const row = p.new as SensorReading;
-        setLatest(row); setHistory(prev => [...prev.slice(-39), row]); setOnline(true);
+
+    const channel: RealtimeChannel = supabase.channel("esp32-live")
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "sensor_readings" }, (payload) => {
+        const row = payload.new as SensorReading;
+        setLatest(row);
+        setHistory(prev => [...prev.slice(-59), row]);
+        setOnline(true);
+        setLastSeen(new Date(row.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }));
+        resetWatchdog();
       })
-      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "device_controls" }, (p) => {
-        setControls(p.new as DeviceControls);
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "device_controls" }, (payload) => {
+        setControls(payload.new as DeviceControls);
       })
-      .subscribe();
-    return () => { supabase.removeChannel(ch); };
-  }, [fetchAll]);
+      .subscribe((status) => {
+        if (status === "SUBSCRIBED") console.log("[Realtime] connected to esp32-live channel");
+      });
+
+    return () => {
+      supabase.removeChannel(channel);
+      if (watchdogRef.current) clearTimeout(watchdogRef.current);
+    };
+  }, [fetchAll, resetWatchdog]);
 
   // ── Write helpers ─────────────────────────────────────────────────────────
   const patchCtrl = async (data: Partial<DeviceControls>) => {
-    const { error } = await supabase.from("device_controls")
-      .update({ ...data, updated_at: new Date().toISOString() }).eq("id", 1);
+    const { error } = await supabase
+      .from("device_controls")
+      .update({ ...data, updated_at: new Date().toISOString() })
+      .eq("id", 1);
     if (!error) setControls(p => p ? { ...p, ...data } : p);
     return !error;
   };
 
   const toggleR1 = async () => {
-    if (!controls) return; setLoadingR1(true);
+    if (!controls) return;
+    setLoadingR1(true);
     await patchCtrl({ relay1_state: !controls.relay1_state, relay1_manual: true, schedule_set: false });
     setLoadingR1(false);
   };
+
   const toggleR2 = async () => {
-    if (!controls) return; setLoadingR2(true);
+    if (!controls) return;
+    setLoadingR2(true);
     await patchCtrl({ relay2_state: !controls.relay2_state, relay2_manual: true });
     setLoadingR2(false);
   };
@@ -277,20 +302,26 @@ export default function Dashboard() {
   const saveSchedule = async () => {
     const oh = parseInt(sched.onH), om = parseInt(sched.onM);
     const fh = parseInt(sched.offH), fm = parseInt(sched.offM);
-    if ([oh,om,fh,fm].some(isNaN) || oh<0||oh>23||om<0||om>59||fh<0||fh>23||fm<0||fm>59) {
-      setSchedMsg({ ok: false, text: "Invalid times — check values (0-23 h, 0-59 m)" }); return;
+    if ([oh,om,fh,fm].some(isNaN) || oh < 0 || oh > 23 || om < 0 || om > 59 || fh < 0 || fh > 23 || fm < 0 || fm > 59) {
+      setSchedMsg({ ok: false, text: "Invalid — check hour (0-23) and minute (0-59)" }); return;
     }
     setSchedSaving(true);
     const ok = await patchCtrl({ on_hour: oh, on_min: om, off_hour: fh, off_min: fm, schedule_set: true, relay1_manual: false });
     setSchedSaving(false);
-    setSchedMsg({ ok, text: ok ? "Schedule saved!" : "Save failed." });
-    setTimeout(() => setSchedMsg(null), 3500);
+    setSchedMsg({ ok, text: ok ? "Schedule pushed to device!" : "Save failed — check Supabase." });
+    setTimeout(() => setSchedMsg(null), 4000);
+  };
+
+  const clearSchedule = async () => {
+    await patchCtrl({ schedule_set: false });
   };
 
   const saveThreshold = async () => {
     const v = parseInt(thrInput);
     if (isNaN(v) || v < 0 || v > 4095) return;
-    setThrSaving(true); await patchCtrl({ ldr_threshold: v }); setThrSaving(false);
+    setThrSaving(true);
+    await patchCtrl({ ldr_threshold: v });
+    setThrSaving(false);
   };
 
   const savePower = async () => {
@@ -298,419 +329,482 @@ export default function Dashboard() {
     if ([r1w, r2w, tariff].some(isNaN)) return;
     setPwrSaving(true);
     const { error } = await supabase.from("power_settings")
-      .update({ relay1_watts: r1w, relay2_watts: r2w, tariff_per_kwh: tariff, currency: pwrForm.currency }).eq("id", 1);
+      .update({ relay1_watts: r1w, relay2_watts: r2w, tariff_per_kwh: tariff, currency: pwrForm.currency })
+      .eq("id", 1);
     if (!error) setPower({ relay1_watts: r1w, relay2_watts: r2w, tariff_per_kwh: tariff, currency: pwrForm.currency });
-    setPwrSaving(false); setPwrEditing(false);
+    setPwrSaving(false);
+    setPwrEditing(false);
   };
 
-  // ── Derived data ──────────────────────────────────────────────────────────
+  // ── Derived ───────────────────────────────────────────────────────────────
   const stats    = calcPower(history, power);
-  const ldrPct   = latest ? Math.round((latest.ldr_value / 4095) * 100) : 0;
+  const ldrVal   = latest?.ldr_value ?? 0;
+  const ldrPct   = Math.round((ldrVal / 4095) * 100);
   const thr      = controls?.ldr_threshold ?? 1600;
-  const ldrLabel = !latest ? "—" : latest.ldr_value < thr - 80 ? "Dark" : latest.ldr_value > thr + 80 ? "Bright" : "Ambient";
+  const ldrLabel = !latest ? "—" : ldrVal < thr - 80 ? "DARK" : ldrVal > thr + 80 ? "BRIGHT" : "AMBIENT";
+  const ldrColor = ldrLabel === "DARK" ? "text-blue-400" : ldrLabel === "BRIGHT" ? "text-yellow-300" : "text-lime-400";
 
-  const windowH  = history.length > 1
+  const windowH   = history.length > 1
     ? (new Date(history[history.length-1].created_at).getTime() - new Date(history[0].created_at).getTime()) / 3_600_000 : 0;
   const dailyKwh  = windowH > 0 ? (stats.kwh / windowH) * 24 : 0;
   const dailyCost = dailyKwh * power.tariff_per_kwh;
   const monthCost = dailyCost * 30;
-  const lastSeen  = latest ? new Date(latest.created_at).toLocaleTimeString([], { hour:"2-digit", minute:"2-digit", second:"2-digit" }) : null;
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
-    <div className="min-h-screen bg-[#f6f7fb]" style={{ fontFamily: "'DM Sans', 'Segoe UI', sans-serif" }}>
-      <style>{`@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=DM+Mono:wght@400;500&display=swap');`}</style>
+    <div className="min-h-screen bg-[#0a0e17] text-white"
+      style={{ fontFamily: "'Space Grotesk', 'Syne', system-ui, sans-serif" }}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap');
+        :root { font-family: 'Space Grotesk', system-ui, sans-serif; }
+        .mono { font-family: 'Space Mono', monospace; }
+        .glow-green { text-shadow: 0 0 20px rgba(163,230,53,0.6); }
+        .glow-box-green { box-shadow: 0 0 20px rgba(163,230,53,0.15), inset 0 0 20px rgba(163,230,53,0.05); }
+        .grid-bg {
+          background-image: linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px),
+                            linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px);
+          background-size: 40px 40px;
+        }
+        .tab-active { background: linear-gradient(135deg, rgba(163,230,53,0.2), rgba(163,230,53,0.05)); border-color: rgba(163,230,53,0.4); }
+        input[type=number]::-webkit-outer-spin-button,
+        input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+      `}</style>
 
-      {/* Header */}
-      <header className="bg-white border-b border-slate-100 sticky top-0 z-40 shadow-[0_1px_0_0_#f1f5f9]">
-        <div className="max-w-5xl mx-auto px-5 sm:px-8 h-16 flex items-center justify-between">
+      {/* Atmospheric background */}
+      <div className="fixed inset-0 pointer-events-none">
+        <div className="absolute top-[-20%] left-[-10%] w-[600px] h-[600px] rounded-full"
+          style={{ background: "radial-gradient(circle, rgba(163,230,53,0.04) 0%, transparent 70%)" }}/>
+        <div className="absolute bottom-[-10%] right-[-10%] w-[500px] h-[500px] rounded-full"
+          style={{ background: "radial-gradient(circle, rgba(59,130,246,0.06) 0%, transparent 70%)" }}/>
+        <div className="grid-bg absolute inset-0 opacity-100"/>
+      </div>
+
+      {/* ── HEADER ── */}
+      <header className="relative z-40 border-b border-white/[0.06] bg-black/30 backdrop-blur-xl">
+        <div className="max-w-6xl mx-auto px-5 sm:px-8 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="h-9 w-9 rounded-xl bg-blue-600 flex items-center justify-center shadow-md shadow-blue-200">
-              <svg className="h-5 w-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M13 10V3L4 14h7v7l9-11h-7z"/>
+            <div className="h-9 w-9 rounded-xl flex items-center justify-center"
+              style={{ background: "linear-gradient(135deg, #a3e635, #65a30d)", boxShadow: "0 0 20px rgba(163,230,53,0.4)" }}>
+              <svg className="h-5 w-5 text-black" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M13 2L3 14h9v8l9-11h-8z"/>
               </svg>
             </div>
             <div>
-              <h1 className="text-[15px] font-semibold text-slate-800 leading-none">LightControl ESP32</h1>
-              <p className="text-[11px] text-slate-400 mt-0.5 leading-none" style={{ fontFamily: "'DM Mono', monospace" }}>DS1302 · Relay×2 · LDR · Supabase</p>
+              <div className="text-sm font-bold tracking-wide text-white">LightControl</div>
+              <div className="text-[10px] text-white/30 mono">ESP32 · DS1302 · Supabase Live</div>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <Pulse on={online} />
-            <span className="text-xs font-medium text-slate-500">
-              {online ? (lastSeen ? `Live · ${lastSeen}` : "Connected") : "Waiting for device…"}
-            </span>
+
+          <div className="flex items-center gap-3">
+            <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full border text-xs font-semibold mono
+              ${online
+                ? "border-lime-500/30 bg-lime-500/10 text-lime-400"
+                : "border-white/10 bg-white/5 text-white/30"
+              }`}>
+              <LiveDot on={online}/>
+              {online ? `LIVE · ${lastSeen ?? "…"}` : "OFFLINE"}
+            </div>
+            <div className="text-[10px] mono text-white/20 hidden sm:block">
+              {history.length} readings
+            </div>
           </div>
         </div>
       </header>
 
-      <main className="max-w-5xl mx-auto px-5 sm:px-8 py-7 space-y-5">
+      <main className="relative z-10 max-w-6xl mx-auto px-5 sm:px-8 py-8 space-y-6">
 
-        {/* Stat strip */}
+        {/* ── STAT STRIP ── */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          {[
-            { emoji: "🌤", label: "Light Level",  val: latest ? `${ldrPct}%` : "—",       sub: ldrLabel,                                            vc: "text-amber-500" },
-            { emoji: "⚡", label: "Relay 1",      val: controls?.relay1_state ? "ON":"OFF", sub: controls?.schedule_set ? "Scheduled" : controls?.relay1_manual ? "Manual" : "Idle", vc: controls?.relay1_state ? "text-emerald-600":"text-slate-400" },
-            { emoji: "💡", label: "Relay 2",      val: controls?.relay2_state ? "ON":"OFF", sub: controls?.relay2_manual ? "Manual" : "Auto-LDR",    vc: controls?.relay2_state ? "text-emerald-600":"text-slate-400" },
-            { emoji: "🔋", label: "Daily Est.",   val: dailyKwh > 0 ? `${dailyKwh.toFixed(3)} kWh`:"—", sub: dailyCost>0?`${power.currency} ${dailyCost.toFixed(3)}`:"No data", vc: "text-blue-600" },
-          ].map(s => (
-            <Card key={s.label} className="p-4">
-              <div className="flex items-center gap-1.5 mb-2">
-                <span className="text-base">{s.emoji}</span>
-                <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">{s.label}</span>
-              </div>
-              <div className={`text-xl font-bold ${s.vc}`} style={{ fontFamily: "'DM Mono', monospace" }}>{s.val}</div>
-              <div className="text-[11px] text-slate-400 mt-0.5">{s.sub}</div>
-            </Card>
-          ))}
+          <StatBadge label="LDR Raw" value={latest ? String(ldrVal) : "—"} sub={`${ldrPct}% of 4095`} accent={ldrColor}/>
+          <StatBadge label="Light Status" value={ldrLabel} sub={`Threshold ${thr}`} accent={ldrColor}/>
+          <StatBadge
+            label="Relay 1"
+            value={controls?.relay1_state ? "ON" : "OFF"}
+            sub={controls?.schedule_set ? "Scheduled" : controls?.relay1_manual ? "Manual" : "Idle"}
+            accent={controls?.relay1_state ? "text-lime-400 glow-green" : "text-white/30"}/>
+          <StatBadge
+            label="Relay 2"
+            value={controls?.relay2_state ? "ON" : "OFF"}
+            sub={controls?.relay2_manual ? "Manual override" : "Auto-LDR"}
+            accent={controls?.relay2_state ? "text-lime-400 glow-green" : "text-white/30"}/>
         </div>
 
-        {/* Tabs */}
-        <div className="flex gap-1 bg-slate-100 rounded-xl p-1 w-fit">
-          {(["overview","schedule","power"] as const).map(t => (
+        {/* ── TABS ── */}
+        <div className="flex gap-1.5 p-1 rounded-xl border border-white/[0.08] bg-white/[0.03] w-fit">
+          {(["overview", "schedule", "power"] as const).map(t => (
             <button key={t} onClick={() => setTab(t)}
-              className={`px-4 py-1.5 rounded-lg text-sm font-medium capitalize transition-all ${
-                tab===t ? "bg-white text-slate-800 shadow-sm" : "text-slate-500 hover:text-slate-700"
-              }`}>
-              {t === "power" ? "Power & Billing" : t.charAt(0).toUpperCase() + t.slice(1)}
+              className={`px-5 py-2 rounded-lg text-xs font-bold uppercase tracking-widest transition-all border
+                ${tab === t ? "tab-active text-lime-300" : "border-transparent text-white/30 hover:text-white/60"}`}>
+              {t === "power" ? "Power" : t}
             </button>
           ))}
         </div>
 
-        {/* ═══════════════════════════ OVERVIEW ════════════════════════════ */}
+        {/* ════════════════════════════ OVERVIEW ════════════════════════════ */}
         {tab === "overview" && (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
 
             {/* Relay 1 */}
-            <Card className="p-5">
+            <GlassCard className="p-5">
               <div className="flex items-start justify-between mb-4">
                 <div>
-                  <Label>Relay 1 — Scheduled</Label>
-                  <h3 className="text-base font-semibold text-slate-800">Main Light</h3>
-                  <p className="text-xs text-slate-400 mt-0.5">
+                  <div className="text-[9px] mono font-bold tracking-[0.2em] text-white/30 uppercase mb-1">Relay 1 — GPIO 26</div>
+                  <div className="text-base font-bold text-white">Main Light</div>
+                  <div className="text-[11px] text-white/30 mono mt-0.5">
                     {controls?.schedule_set
-                      ? `${pad2(controls.on_hour)}:${pad2(controls.on_min)} → ${pad2(controls.off_hour)}:${pad2(controls.off_min)}`
-                      : "No schedule set"}
-                  </p>
+                      ? `⏱ ${p2(controls.on_hour)}:${p2(controls.on_min)} → ${p2(controls.off_hour)}:${p2(controls.off_min)}`
+                      : "No schedule active"}
+                  </div>
                 </div>
-                {loadingR1
-                  ? <svg className="animate-spin h-5 w-5 text-blue-400 mt-1" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>
-                  : <Toggle on={controls?.relay1_state ?? false} onChange={toggleR1} disabled={loadingR1} />}
+                <RelayToggle on={controls?.relay1_state ?? false} onChange={toggleR1} loading={loadingR1}/>
               </div>
-              <div className={`rounded-xl px-3 py-2.5 flex items-center gap-2.5 ${controls?.relay1_state ? "bg-emerald-50" : "bg-slate-50"}`}>
-                <Pulse on={controls?.relay1_state ?? false} />
-                <span className={`text-sm font-semibold ${controls?.relay1_state ? "text-emerald-700":"text-slate-400"}`}
-                  style={{ fontFamily:"'DM Mono',monospace" }}>
+
+              <div className={`rounded-xl px-4 py-3 flex items-center gap-3 border transition-all
+                ${controls?.relay1_state
+                  ? "bg-lime-500/10 border-lime-500/30 glow-box-green"
+                  : "bg-white/[0.03] border-white/[0.06]"}`}>
+                <LiveDot on={controls?.relay1_state ?? false}/>
+                <span className={`text-sm font-bold mono ${controls?.relay1_state ? "text-lime-400" : "text-white/30"}`}>
                   {controls?.relay1_state ? "ENERGISED" : "DE-ENERGISED"}
                 </span>
                 {controls?.relay1_manual && (
-                  <span className="ml-auto text-[10px] font-bold text-amber-600 bg-amber-50 border border-amber-100 px-2 py-0.5 rounded-full">MANUAL</span>
+                  <span className="ml-auto text-[9px] font-bold mono px-2 py-0.5 rounded-full bg-orange-500/20 text-orange-400 border border-orange-500/30">
+                    MANUAL
+                  </span>
+                )}
+                {controls?.schedule_set && (
+                  <span className="ml-auto text-[9px] font-bold mono px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-400 border border-blue-500/30">
+                    SCHEDULED
+                  </span>
                 )}
               </div>
-            </Card>
+            </GlassCard>
 
             {/* Relay 2 */}
-            <Card className="p-5">
+            <GlassCard className="p-5">
               <div className="flex items-start justify-between mb-4">
                 <div>
-                  <Label>Relay 2 — LDR Controlled</Label>
-                  <h3 className="text-base font-semibold text-slate-800">Ambient Light</h3>
-                  <p className="text-xs text-slate-400 mt-0.5">Threshold: <span style={{ fontFamily:"'DM Mono',monospace" }}>{controls?.ldr_threshold ?? "—"}</span> / 4095</p>
+                  <div className="text-[9px] mono font-bold tracking-[0.2em] text-white/30 uppercase mb-1">Relay 2 — GPIO 27</div>
+                  <div className="text-base font-bold text-white">Ambient / LDR</div>
+                  <div className="text-[11px] text-white/30 mono mt-0.5">
+                    Threshold: <span className="text-lime-400/70">{controls?.ldr_threshold ?? "—"}</span> / 4095
+                  </div>
                 </div>
-                {loadingR2
-                  ? <svg className="animate-spin h-5 w-5 text-blue-400 mt-1" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>
-                  : <Toggle on={controls?.relay2_state ?? false} onChange={toggleR2} disabled={loadingR2} />}
+                <RelayToggle on={controls?.relay2_state ?? false} onChange={toggleR2} loading={loadingR2}/>
               </div>
-              <div className={`rounded-xl px-3 py-2.5 flex items-center gap-2.5 ${controls?.relay2_state ? "bg-emerald-50":"bg-slate-50"}`}>
-                <Pulse on={controls?.relay2_state ?? false} />
-                <span className={`text-sm font-semibold ${controls?.relay2_state ? "text-emerald-700":"text-slate-400"}`}
-                  style={{ fontFamily:"'DM Mono',monospace" }}>
+
+              <div className={`rounded-xl px-4 py-3 flex items-center gap-3 border transition-all
+                ${controls?.relay2_state
+                  ? "bg-lime-500/10 border-lime-500/30 glow-box-green"
+                  : "bg-white/[0.03] border-white/[0.06]"}`}>
+                <LiveDot on={controls?.relay2_state ?? false}/>
+                <span className={`text-sm font-bold mono ${controls?.relay2_state ? "text-lime-400" : "text-white/30"}`}>
                   {controls?.relay2_state ? "ENERGISED" : "DE-ENERGISED"}
                 </span>
                 {controls?.relay2_manual && (
-                  <span className="ml-auto text-[10px] font-bold text-amber-600 bg-amber-50 border border-amber-100 px-2 py-0.5 rounded-full">MANUAL</span>
+                  <span className="ml-auto text-[9px] font-bold mono px-2 py-0.5 rounded-full bg-orange-500/20 text-orange-400 border border-orange-500/30">
+                    MANUAL
+                  </span>
                 )}
               </div>
-            </Card>
+            </GlassCard>
 
-            {/* LDR sensor */}
-            <Card className="p-5">
-              <Label>LDR Live Sensor (GPIO 34)</Label>
-              <div className="flex items-end gap-2 mb-3">
-                <span className="text-3xl font-bold text-slate-800" style={{ fontFamily:"'DM Mono',monospace" }}>{latest?.ldr_value ?? "—"}</span>
-                <span className="text-sm text-slate-400 mb-1">/ 4095</span>
-                <span className="ml-auto text-xs font-semibold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full">{ldrLabel}</span>
+            {/* LDR Live Sensor */}
+            <GlassCard className="p-5">
+              <div className="text-[9px] mono font-bold tracking-[0.2em] text-white/30 uppercase mb-3">LDR — GPIO 34 (ADC 12-bit)</div>
+
+              <div className="flex items-end gap-2 mb-4">
+                <span className={`text-4xl font-black mono ${ldrColor}`}>
+                  {latest?.ldr_value ?? "—"}
+                </span>
+                <span className="text-white/30 text-sm mb-1 mono">/ 4095</span>
+                <span className={`ml-auto text-xs font-bold mono px-2 py-1 rounded-lg ${
+                  ldrLabel === "DARK" ? "bg-blue-500/20 text-blue-400 border border-blue-500/30"
+                  : ldrLabel === "BRIGHT" ? "bg-yellow-500/20 text-yellow-400 border border-yellow-500/30"
+                  : "bg-lime-500/20 text-lime-400 border border-lime-500/30"
+                }`}>{ldrLabel}</span>
               </div>
-              <div className="relative h-2.5 bg-slate-100 rounded-full overflow-hidden mb-1">
-                <div className="h-full rounded-full bg-gradient-to-r from-blue-400 to-blue-600 transition-all duration-700"
-                  style={{ width: `${ldrPct}%` }} />
-                <div className="absolute top-0 bottom-0 w-0.5 bg-orange-400"
-                  style={{ left: `${Math.round((thr/4095)*100)}%` }} />
+
+              {/* LDR bar */}
+              <div className="relative h-3 bg-white/5 rounded-full overflow-hidden mb-1">
+                <div className="absolute inset-y-0 left-0 rounded-full transition-all duration-700"
+                  style={{
+                    width: `${ldrPct}%`,
+                    background: "linear-gradient(90deg, #3b82f6, #a3e635)"
+                  }}/>
+                <div className="absolute inset-y-0 w-0.5 bg-orange-400/80"
+                  style={{ left: `${Math.round((thr / 4095) * 100)}%` }}/>
               </div>
-              <div className="flex justify-between text-[10px] text-slate-300 mb-4" style={{ fontFamily:"'DM Mono',monospace" }}>
-                <span>Dark</span><span className="text-orange-400">▲ {thr}</span><span>Bright</span>
+              <div className="flex justify-between text-[10px] mono text-white/20 mb-5">
+                <span>0 · Dark</span>
+                <span className="text-orange-400/70">▲ thr:{thr}</span>
+                <span>4095 · Bright</span>
               </div>
+
+              {/* Threshold setter */}
               <div className="flex gap-2">
-                <input type="number" min={0} max={4095} placeholder="Set threshold (0–4095)"
+                <input
+                  type="number" min={0} max={4095} placeholder="New threshold (0–4095)"
                   value={thrInput} onChange={e => setThrInput(e.target.value)}
-                  className="flex-1 text-sm border border-slate-200 rounded-xl px-3 py-2 focus:outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all"
-                  style={{ fontFamily:"'DM Mono',monospace" }} />
+                  className="flex-1 bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white placeholder-white/20 mono focus:outline-none focus:border-lime-500/50 focus:ring-1 focus:ring-lime-500/20 transition-all"/>
                 <button onClick={saveThreshold} disabled={thrSaving}
-                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold rounded-xl shadow-sm shadow-blue-200 transition-all active:scale-95 disabled:opacity-50">
-                  {thrSaving ? "…" : "Set"}
+                  className="px-4 py-2.5 rounded-xl text-sm font-bold mono transition-all active:scale-95 disabled:opacity-40"
+                  style={{ background: "linear-gradient(135deg, #a3e635, #65a30d)", color: "#000" }}>
+                  {thrSaving ? "…" : "SET"}
                 </button>
               </div>
-            </Card>
+            </GlassCard>
 
-            {/* Sparkline + log */}
-            <Card className="p-5">
-              <Label>LDR History — {history.length} readings</Label>
-              <Sparkline data={history.map(r => r.ldr_value)} threshold={thr} />
-              <div className="flex justify-between text-[10px] text-slate-300 mt-1 mb-3" style={{ fontFamily:"'DM Mono',monospace" }}>
+            {/* LDR Chart + Log */}
+            <GlassCard className="p-5">
+              <div className="text-[9px] mono font-bold tracking-[0.2em] text-white/30 uppercase mb-3">
+                LDR History — {history.length} pts
+              </div>
+              <Sparkline data={history.map(r => r.ldr_value)} threshold={thr}/>
+              <div className="flex justify-between text-[10px] mono text-white/20 mb-4 mt-1">
                 <span>← oldest</span>
-                <span className="text-orange-400 flex items-center gap-1">
-                  <svg width="14" height="3"><line x1="0" y1="1.5" x2="14" y2="1.5" stroke="currentColor" strokeWidth="1.5" strokeDasharray="4,2"/></svg>
-                  threshold
-                </span>
+                <span className="text-orange-400/60">── threshold</span>
                 <span>latest →</span>
               </div>
-              <div className="space-y-0.5 max-h-28 overflow-y-auto">
-                {[...history].reverse().slice(0,7).map(r => (
-                  <div key={r.id} className="grid grid-cols-4 text-[11px] py-1 border-b border-slate-50 last:border-0"
-                    style={{ fontFamily:"'DM Mono',monospace" }}>
-                    <span className="text-slate-400">{new Date(r.created_at).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit",second:"2-digit"})}</span>
-                    <span className="text-blue-500 text-center">LDR {r.ldr_value}</span>
-                    <span className={`text-center ${r.relay1_state?"text-emerald-500":"text-slate-300"}`}>R1 {r.relay1_state?"ON":"OFF"}</span>
-                    <span className={`text-right  ${r.relay2_state?"text-emerald-500":"text-slate-300"}`}>R2 {r.relay2_state?"ON":"OFF"}</span>
+
+              {/* Mini log */}
+              <div className="space-y-0.5 max-h-32 overflow-y-auto">
+                {[...history].reverse().slice(0, 8).map(r => (
+                  <div key={r.id} className="grid grid-cols-4 text-[10px] mono py-1 border-b border-white/[0.04] last:border-0">
+                    <span className="text-white/30">{new Date(r.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>
+                    <span className="text-lime-400/80 text-center">{r.ldr_value}</span>
+                    <span className={`text-center ${r.relay1_state ? "text-lime-400" : "text-white/20"}`}>R1:{r.relay1_state ? "ON" : "OFF"}</span>
+                    <span className={`text-right  ${r.relay2_state ? "text-lime-400" : "text-white/20"}`}>R2:{r.relay2_state ? "ON" : "OFF"}</span>
                   </div>
                 ))}
-                {!history.length && <p className="text-xs text-slate-300 text-center py-2">No data yet.</p>}
+                {!history.length && <p className="text-[10px] mono text-white/20 text-center py-3">No readings yet.</p>}
               </div>
-            </Card>
+            </GlassCard>
           </div>
         )}
 
-        {/* ═══════════════════════════ SCHEDULE ════════════════════════════ */}
+        {/* ════════════════════════════ SCHEDULE ════════════════════════════ */}
         {tab === "schedule" && (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-            <Card className="p-6">
-              <Label>Relay 1 — ON / OFF Schedule</Label>
-              <h3 className="text-base font-semibold text-slate-800 mb-5">Set Timer</h3>
+            <GlassCard className="p-6">
+              <div className="text-[9px] mono font-bold tracking-[0.2em] text-white/30 uppercase mb-1">Relay 1 Timer</div>
+              <div className="text-base font-bold text-white mb-5">Set ON / OFF Schedule</div>
 
               {controls?.schedule_set && (
-                <div className="flex items-center gap-2 bg-emerald-50 border border-emerald-100 rounded-xl px-3 py-2.5 mb-5">
-                  <svg className="h-4 w-4 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
-                  </svg>
-                  <span className="text-sm font-semibold text-emerald-700" style={{ fontFamily:"'DM Mono',monospace" }}>
-                    {pad2(controls.on_hour)}:{pad2(controls.on_min)} → {pad2(controls.off_hour)}:{pad2(controls.off_min)}
-                  </span>
+                <div className="flex items-center justify-between bg-lime-500/10 border border-lime-500/20 rounded-xl px-4 py-3 mb-5">
+                  <div className="flex items-center gap-2">
+                    <LiveDot on={true}/>
+                    <span className="text-sm font-bold mono text-lime-400">
+                      {p2(controls.on_hour)}:{p2(controls.on_min)} → {p2(controls.off_hour)}:{p2(controls.off_min)}
+                    </span>
+                  </div>
+                  <button onClick={clearSchedule} className="text-[10px] mono text-white/30 hover:text-red-400 transition-colors">
+                    CLEAR
+                  </button>
                 </div>
               )}
 
               {[
-                { label:"Turn ON at",  keys:["onH","onM"]  as const, ring:"focus:border-emerald-400 focus:ring-emerald-100" },
-                { label:"Turn OFF at", keys:["offH","offM"] as const, ring:"focus:border-red-400    focus:ring-red-100"     },
+                { label: "Turn ON at",  keys: ["onH", "onM"]  as const, accent: "focus:border-lime-500/50" },
+                { label: "Turn OFF at", keys: ["offH", "offM"] as const, accent: "focus:border-red-500/50"  },
               ].map(row => (
                 <div key={row.label} className="mb-4">
-                  <label className="block text-xs font-semibold text-slate-500 mb-2">{row.label}</label>
+                  <label className="block text-xs font-semibold text-white/40 mb-2 mono">{row.label}</label>
                   <div className="grid grid-cols-2 gap-3">
-                    {row.keys.map((k,i) => (
-                      <input key={k} type="number" min={0} max={i===0?23:59}
-                        placeholder={i===0?"Hour (0-23)":"Min (0-59)"}
-                        value={sched[k]} onChange={e => setSched(p => ({...p,[k]:e.target.value}))}
-                        className={`border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 transition-all ${row.ring}`}
-                        style={{ fontFamily:"'DM Mono',monospace" }} />
+                    {row.keys.map((k, i) => (
+                      <input key={k} type="number" min={0} max={i === 0 ? 23 : 59}
+                        placeholder={i === 0 ? "Hour (0-23)" : "Min (0-59)"}
+                        value={sched[k]} onChange={e => setSched(p => ({ ...p, [k]: e.target.value }))}
+                        className={`bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white placeholder-white/20 mono
+                          focus:outline-none focus:ring-1 focus:ring-lime-500/20 transition-all ${row.accent}`}/>
                     ))}
                   </div>
                 </div>
               ))}
 
               <button onClick={saveSchedule} disabled={schedSaving}
-                className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm rounded-xl shadow-sm shadow-blue-200 transition-all active:scale-95 disabled:opacity-50 mt-2">
-                {schedSaving ? "Saving…" : "Save Schedule"}
+                className="w-full py-3 rounded-xl text-sm font-bold mono mt-2 transition-all active:scale-95 disabled:opacity-40"
+                style={{ background: "linear-gradient(135deg, #a3e635, #65a30d)", color: "#000" }}>
+                {schedSaving ? "PUSHING TO DEVICE…" : "SAVE SCHEDULE"}
               </button>
-              {schedMsg && (
-                <p className={`mt-3 text-sm text-center font-semibold ${schedMsg.ok?"text-emerald-600":"text-red-500"}`}>{schedMsg.text}</p>
-              )}
-            </Card>
 
-            {/* Timeline */}
-            <Card className="p-6">
-              <Label>24-Hour Visual Timeline</Label>
-              <div className="mt-2 mb-5">
-                <div className="h-9 bg-slate-100 rounded-full overflow-hidden relative">
-                  {controls?.schedule_set && (() => {
-                    const op = ((controls.on_hour*60+controls.on_min)/1440)*100;
-                    const fp = ((controls.off_hour*60+controls.off_min)/1440)*100;
-                    return op < fp
-                      ? <div className="absolute top-0 bottom-0 bg-blue-400/40 rounded-full" style={{left:`${op}%`,width:`${fp-op}%`}}/>
-                      : <><div className="absolute top-0 bottom-0 bg-blue-400/40" style={{left:`${op}%`,right:0}}/><div className="absolute top-0 bottom-0 bg-blue-400/40" style={{left:0,width:`${fp}%`}}/></>;
-                  })()}
-                  {(() => {
-                    const n = new Date();
-                    const p = ((n.getHours()*60+n.getMinutes())/1440)*100;
-                    return <div className="absolute top-0 bottom-0 w-0.5 bg-slate-500/60" style={{left:`${p}%`}}/>;
-                  })()}
-                </div>
-                <div className="flex justify-between text-[10px] text-slate-300 mt-1.5 px-0.5" style={{ fontFamily:"'DM Mono',monospace" }}>
-                  {[0,6,12,18,24].map(h => <span key={h}>{pad2(h)}:00</span>)}
-                </div>
+              {schedMsg && (
+                <p className={`mt-3 text-xs font-bold mono text-center ${schedMsg.ok ? "text-lime-400" : "text-red-400"}`}>
+                  {schedMsg.text}
+                </p>
+              )}
+            </GlassCard>
+
+            {/* Timeline visualization */}
+            <GlassCard className="p-6">
+              <div className="text-[9px] mono font-bold tracking-[0.2em] text-white/30 uppercase mb-4">24h Timeline</div>
+
+              <div className="h-10 bg-white/5 rounded-full overflow-hidden relative mb-2">
+                {controls?.schedule_set && (() => {
+                  const op = ((controls.on_hour * 60 + controls.on_min) / 1440) * 100;
+                  const fp = ((controls.off_hour * 60 + controls.off_min) / 1440) * 100;
+                  const style = { background: "rgba(163,230,53,0.3)", border: "1px solid rgba(163,230,53,0.4)" };
+                  return op < fp
+                    ? <div className="absolute top-0 bottom-0 rounded-full" style={{ left: `${op}%`, width: `${fp - op}%`, ...style }}/>
+                    : <>
+                        <div className="absolute top-0 bottom-0" style={{ left: `${op}%`, right: 0, ...style }}/>
+                        <div className="absolute top-0 bottom-0" style={{ left: 0, width: `${fp}%`, ...style }}/>
+                      </>;
+                })()}
+                {(() => {
+                  const n = new Date();
+                  const p = ((n.getHours() * 60 + n.getMinutes()) / 1440) * 100;
+                  return <div className="absolute top-0 bottom-0 w-px bg-white/50" style={{ left: `${p}%` }}/>;
+                })()}
+              </div>
+
+              <div className="flex justify-between text-[9px] mono text-white/20 mb-6 px-0.5">
+                {[0, 6, 12, 18, 24].map(h => <span key={h}>{p2(h)}:00</span>)}
               </div>
 
               {[
-                { label:"Status",   val: controls?.schedule_set ? "ACTIVE" : "NOT SET",  vc: controls?.schedule_set?"text-emerald-600":"text-slate-400" },
-                { label:"ON time",  val: controls?.schedule_set ? `${pad2(controls.on_hour)}:${pad2(controls.on_min)}`:"—",  vc:"text-slate-800" },
-                { label:"OFF time", val: controls?.schedule_set ? `${pad2(controls.off_hour)}:${pad2(controls.off_min)}`:"—",vc:"text-slate-800" },
-                { label:"Duration", val: controls?.schedule_set ? (() => { let m=(controls.off_hour*60+controls.off_min)-(controls.on_hour*60+controls.on_min); if(m<0)m+=1440; return `${Math.floor(m/60)}h ${m%60}m`; })() : "—", vc:"text-slate-800" },
+                { label: "Status",   val: controls?.schedule_set ? "ACTIVE" : "NOT SET", vc: controls?.schedule_set ? "text-lime-400" : "text-white/30" },
+                { label: "ON",       val: controls?.schedule_set ? `${p2(controls.on_hour)}:${p2(controls.on_min)}` : "—", vc: "text-white" },
+                { label: "OFF",      val: controls?.schedule_set ? `${p2(controls.off_hour)}:${p2(controls.off_min)}` : "—", vc: "text-white" },
+                { label: "Duration", val: controls?.schedule_set ? (() => {
+                  let m = (controls.off_hour * 60 + controls.off_min) - (controls.on_hour * 60 + controls.on_min);
+                  if (m < 0) m += 1440;
+                  return `${Math.floor(m / 60)}h ${m % 60}m`;
+                })() : "—", vc: "text-white" },
               ].map(row => (
-                <div key={row.label} className="flex justify-between items-center py-2.5 border-b border-slate-50 last:border-0 text-sm">
-                  <span className="text-slate-500">{row.label}</span>
-                  <span className={`font-semibold ${row.vc}`} style={{ fontFamily:"'DM Mono',monospace" }}>{row.val}</span>
+                <div key={row.label} className="flex justify-between items-center py-3 border-b border-white/[0.05] last:border-0 text-sm">
+                  <span className="text-white/40 mono text-xs">{row.label}</span>
+                  <span className={`font-bold mono text-xs ${row.vc}`}>{row.val}</span>
                 </div>
               ))}
-            </Card>
+            </GlassCard>
           </div>
         )}
 
-        {/* ════════════════════════ POWER & BILLING ════════════════════════ */}
+        {/* ══════════════════════════════ POWER ════════════════════════════ */}
         {tab === "power" && (
           <div className="space-y-5">
-
-            {/* Summary cards */}
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              {[
-                { label:"Session Energy",    val:`${stats.kwh.toFixed(4)} kWh`,     sub:`${power.currency} ${stats.cost.toFixed(4)}`,       vc:"text-blue-600" },
-                { label:"Relay 1 Runtime",   val:`${stats.r1h.toFixed(2)}h`,        sub:`${(stats.r1h*power.relay1_watts/1000).toFixed(4)} kWh`,vc:"text-slate-800" },
-                { label:"Relay 2 Runtime",   val:`${stats.r2h.toFixed(2)}h`,        sub:`${(stats.r2h*power.relay2_watts/1000).toFixed(4)} kWh`,vc:"text-slate-800" },
-                { label:"Monthly Estimate",  val:`${power.currency} ${monthCost.toFixed(2)}`, sub:`${dailyKwh.toFixed(3)} kWh/day`,          vc:"text-violet-600" },
-              ].map(s => (
-                <Card key={s.label} className="p-4">
-                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-1">{s.label}</p>
-                  <p className={`text-xl font-bold ${s.vc}`} style={{ fontFamily:"'DM Mono',monospace" }}>{s.val}</p>
-                  <p className="text-[11px] text-slate-400 mt-0.5">{s.sub}</p>
-                </Card>
-              ))}
+              <StatBadge label="Session kWh"   value={`${stats.kwh.toFixed(4)}`}       sub={`${power.currency} ${stats.cost.toFixed(4)}`} accent="text-lime-400"/>
+              <StatBadge label="R1 Runtime"    value={`${stats.r1h.toFixed(2)}h`}       sub={`${(stats.r1h * power.relay1_watts / 1000).toFixed(4)} kWh`}/>
+              <StatBadge label="R2 Runtime"    value={`${stats.r2h.toFixed(2)}h`}       sub={`${(stats.r2h * power.relay2_watts / 1000).toFixed(4)} kWh`}/>
+              <StatBadge label="Monthly Est."  value={`${power.currency} ${monthCost.toFixed(2)}`} sub={`${dailyKwh.toFixed(3)} kWh/day`} accent="text-violet-400"/>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+              {/* Breakdown */}
+              <GlassCard className="p-5">
+                <div className="text-[9px] mono font-bold tracking-[0.2em] text-white/30 uppercase mb-4">Usage Breakdown</div>
 
-              {/* Usage breakdown */}
-              <Card className="p-5">
-                <Label>Relay Usage Breakdown</Label>
                 {[
-                  { label:"Relay 1", watts:power.relay1_watts, hours:stats.r1h, bar:"bg-blue-500",   bg:"bg-blue-50"   },
-                  { label:"Relay 2", watts:power.relay2_watts, hours:stats.r2h, bar:"bg-violet-500", bg:"bg-violet-50" },
+                  { label: "Relay 1", watts: power.relay1_watts, hours: stats.r1h, color: "#a3e635" },
+                  { label: "Relay 2", watts: power.relay2_watts, hours: stats.r2h, color: "#a78bfa" },
                 ].map(r => {
-                  const kwh = (r.hours * r.watts) / 1000;
+                  const kwh  = (r.hours * r.watts) / 1000;
                   const cost = kwh * power.tariff_per_kwh;
                   const pct  = stats.kwh > 0 ? (kwh / stats.kwh) * 100 : 0;
                   return (
                     <div key={r.label} className="mb-5 last:mb-0">
-                      <div className="flex justify-between items-baseline mb-1.5">
-                        <span className="text-sm font-semibold text-slate-700">{r.label} — {r.watts}W</span>
-                        <span className="text-xs text-slate-500" style={{ fontFamily:"'DM Mono',monospace" }}>
-                          {kwh.toFixed(4)} kWh · {power.currency} {cost.toFixed(4)}
-                        </span>
+                      <div className="flex justify-between items-baseline mb-2">
+                        <span className="text-sm font-bold text-white">{r.label} — {r.watts}W</span>
+                        <span className="text-[10px] mono text-white/30">{kwh.toFixed(4)} kWh · {power.currency} {cost.toFixed(4)}</span>
                       </div>
-                      <div className={`h-2.5 rounded-full ${r.bg} overflow-hidden`}>
-                        <div className={`h-full rounded-full ${r.bar} transition-all duration-700`} style={{width:`${pct}%`}}/>
+                      <div className="h-2 bg-white/5 rounded-full overflow-hidden">
+                        <div className="h-full rounded-full transition-all duration-700"
+                          style={{ width: `${pct}%`, background: r.color, boxShadow: `0 0 8px ${r.color}60` }}/>
                       </div>
-                      <p className="text-[10px] text-slate-300 mt-1" style={{ fontFamily:"'DM Mono',monospace" }}>
-                        {r.hours.toFixed(2)}h · {pct.toFixed(1)}% of session
-                      </p>
+                      <div className="text-[10px] mono text-white/20 mt-1">{r.hours.toFixed(2)}h · {pct.toFixed(1)}%</div>
                     </div>
                   );
                 })}
 
-                {/* Cost projection bars (weekly) */}
-                <div className="mt-5 pt-4 border-t border-slate-50">
-                  <Label>Projected Weekly Spend</Label>
+                {/* Projected weekly bars */}
+                <div className="mt-6 pt-4 border-t border-white/[0.06]">
+                  <div className="text-[9px] mono font-bold tracking-[0.2em] text-white/30 uppercase mb-3">Projected 7-Day Spend</div>
                   <div className="grid grid-cols-7 gap-1.5 mt-2">
-                    {["M","T","W","T","F","S","S"].map((d,i) => {
-                      const fac = 0.55 + Math.sin(i*1.3+1)*0.45;
-                      const h   = Math.max(8, fac*52);
+                    {["M","T","W","T","F","S","S"].map((d, i) => {
+                      const fac = 0.55 + Math.sin(i * 1.3 + 1) * 0.45;
+                      const h   = Math.max(6, fac * 52);
                       const c   = (dailyCost * fac).toFixed(3);
                       return (
                         <div key={i} title={`${power.currency} ${c}`} className="flex flex-col items-center gap-1">
-                          <div className="w-full bg-slate-100 rounded-lg overflow-hidden relative" style={{height:52}}>
-                            <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-blue-500 to-blue-400 rounded-lg transition-all duration-700"
-                              style={{height: h}}/>
+                          <div className="w-full bg-white/5 rounded-lg overflow-hidden relative" style={{ height: 52 }}>
+                            <div className="absolute bottom-0 left-0 right-0 rounded-lg transition-all duration-700"
+                              style={{ height: h, background: "linear-gradient(0deg, #a3e635, #65a30d)", opacity: 0.8 }}/>
                           </div>
-                          <span className="text-[9px] text-slate-400" style={{ fontFamily:"'DM Mono',monospace" }}>{d}</span>
+                          <span className="text-[9px] mono text-white/30">{d}</span>
                         </div>
                       );
                     })}
                   </div>
-                  <p className="text-[10px] text-slate-300 mt-2" style={{ fontFamily:"'DM Mono',monospace" }}>
-                    * Bars reflect usage pattern from session
-                  </p>
+                  <p className="text-[10px] mono text-white/20 mt-2">* Based on current session pattern</p>
                 </div>
-              </Card>
+              </GlassCard>
 
-              {/* Power settings */}
-              <Card className="p-5">
+              {/* Settings */}
+              <GlassCard className="p-5">
                 <div className="flex items-center justify-between mb-4">
-                  <Label>Power & Tariff Settings</Label>
+                  <div className="text-[9px] mono font-bold tracking-[0.2em] text-white/30 uppercase">Tariff & Load</div>
                   {!pwrEditing && (
                     <button onClick={() => setPwrEditing(true)}
-                      className="text-xs font-semibold text-blue-600 hover:text-blue-700 -mt-2">Edit</button>
+                      className="text-[10px] mono font-bold text-lime-400/70 hover:text-lime-400 transition-colors">
+                      EDIT
+                    </button>
                   )}
                 </div>
 
                 {pwrEditing ? (
                   <div className="space-y-3">
                     {[
-                      { label:"Relay 1 load (W)",     key:"r1w"      as const },
-                      { label:"Relay 2 load (W)",     key:"r2w"      as const },
-                      { label:"Tariff (cost/kWh)",    key:"tariff"   as const },
-                      { label:"Currency (e.g. USD)",  key:"currency" as const },
+                      { label: "Relay 1 load (W)", key: "r1w"      as const },
+                      { label: "Relay 2 load (W)", key: "r2w"      as const },
+                      { label: "Tariff /kWh",       key: "tariff"   as const },
+                      { label: "Currency code",     key: "currency" as const },
                     ].map(f => (
                       <div key={f.key}>
-                        <label className="block text-xs font-semibold text-slate-500 mb-1">{f.label}</label>
-                        <input value={pwrForm[f.key]} onChange={e => setPwrForm(p => ({...p,[f.key]:e.target.value}))}
-                          className="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all"
-                          style={{ fontFamily:"'DM Mono',monospace" }} />
+                        <label className="block text-[10px] mono font-bold text-white/30 mb-1 uppercase">{f.label}</label>
+                        <input value={pwrForm[f.key]} onChange={e => setPwrForm(p => ({ ...p, [f.key]: e.target.value }))}
+                          className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white mono focus:outline-none focus:border-lime-500/50 focus:ring-1 focus:ring-lime-500/20 transition-all"/>
                       </div>
                     ))}
                     <div className="flex gap-2 pt-1">
                       <button onClick={savePower} disabled={pwrSaving}
-                        className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold rounded-xl transition-all active:scale-95 disabled:opacity-50">
-                        {pwrSaving ? "Saving…" : "Save"}
+                        className="flex-1 py-2.5 rounded-xl text-sm font-bold mono transition-all active:scale-95 disabled:opacity-40"
+                        style={{ background: "linear-gradient(135deg,#a3e635,#65a30d)", color: "#000" }}>
+                        {pwrSaving ? "SAVING…" : "SAVE"}
                       </button>
                       <button onClick={() => setPwrEditing(false)}
-                        className="flex-1 py-2.5 bg-slate-100 text-slate-600 text-sm font-semibold rounded-xl hover:bg-slate-200 transition-all">
-                        Cancel
+                        className="flex-1 py-2.5 bg-white/5 border border-white/10 text-white/50 text-sm font-bold mono rounded-xl hover:bg-white/10 transition-all">
+                        CANCEL
                       </button>
                     </div>
                   </div>
                 ) : (
-                  <div className="space-y-0.5">
+                  <div>
                     {[
-                      { label:"Relay 1 load",      val:`${power.relay1_watts} W` },
-                      { label:"Relay 2 load",      val:`${power.relay2_watts} W` },
-                      { label:"Tariff",             val:`${power.currency} ${power.tariff_per_kwh} / kWh` },
-                      { label:"Daily estimate",     val:`${power.currency} ${dailyCost.toFixed(3)}` },
-                      { label:"Monthly estimate",   val:`${power.currency} ${monthCost.toFixed(2)}` },
-                      { label:"Yearly estimate",    val:`${power.currency} ${(monthCost*12).toFixed(2)}` },
+                      { label: "Relay 1 load",    val: `${power.relay1_watts} W` },
+                      { label: "Relay 2 load",    val: `${power.relay2_watts} W` },
+                      { label: "Tariff",           val: `${power.currency} ${power.tariff_per_kwh}/kWh` },
+                      { label: "Daily estimate",   val: `${power.currency} ${dailyCost.toFixed(4)}` },
+                      { label: "Monthly estimate", val: `${power.currency} ${monthCost.toFixed(2)}` },
+                      { label: "Yearly estimate",  val: `${power.currency} ${(monthCost * 12).toFixed(2)}` },
                     ].map(r => (
-                      <div key={r.label} className="flex justify-between py-2.5 border-b border-slate-50 last:border-0 text-sm">
-                        <span className="text-slate-500">{r.label}</span>
-                        <span className="font-semibold text-slate-800" style={{ fontFamily:"'DM Mono',monospace" }}>{r.val}</span>
+                      <div key={r.label} className="flex justify-between py-3 border-b border-white/[0.05] last:border-0 text-sm">
+                        <span className="text-white/40 mono text-xs">{r.label}</span>
+                        <span className="font-bold mono text-xs text-white">{r.val}</span>
                       </div>
                     ))}
                   </div>
                 )}
-              </Card>
+              </GlassCard>
             </div>
           </div>
         )}
 
-        {/* Footer */}
-        <footer className="flex flex-col sm:flex-row justify-between items-center gap-1 text-[11px] text-slate-300 pt-3 border-t border-slate-100"
-          style={{ fontFamily:"'DM Mono',monospace" }}>
-          <span>ESP32 · DS1302 RTC · GPIO 26/27 Relay · GPIO 34 LDR</span>
-          <span>SDA=21 SCL=22 · DAT=17 CLK=16 RST=5 · Supabase Realtime</span>
+        {/* ── Footer ── */}
+        <footer className="flex flex-col sm:flex-row justify-between items-center gap-1 text-[10px] mono text-white/15 pt-4 border-t border-white/[0.05]">
+          <span>GPIO 26=R1 · GPIO 27=R2 · GPIO 34=LDR · SDA=21 SCL=22</span>
+          <span>DAT=17 CLK=16 RST=5 · DS1302 RTC · Supabase Realtime</span>
         </footer>
       </main>
     </div>
