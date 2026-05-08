@@ -5,64 +5,37 @@
  *  ESP32 LIGHT CONTROL — LIVE DASHBOARD
  * ═══════════════════════════════════════════════════════════════════════════════
  *
- *  SUPABASE SETUP — run this SQL in your Supabase SQL editor:
- *
- *  create table sensor_readings (
- *    id            bigserial primary key,
- *    created_at    timestamptz default now(),
- *    ldr_value     int         not null,
- *    relay1_state  boolean     not null default false,
- *    relay2_state  boolean     not null default false
- *  );
- *
- *  create table device_controls (
- *    id             int primary key default 1,
- *    relay1_manual  boolean  default false,
- *    relay1_state   boolean  default false,
- *    relay2_manual  boolean  default false,
- *    relay2_state   boolean  default false,
- *    on_hour        int      default -1,
- *    on_min         int      default -1,
- *    off_hour       int      default -1,
- *    off_min        int      default -1,
- *    schedule_set   boolean  default false,
- *    ldr_threshold  int      default 1600,
- *    updated_at     timestamptz default now()
- *  );
- *  insert into device_controls (id) values (1);
- *
- *  create table power_settings (
- *    id              int primary key default 1,
- *    relay1_watts    numeric default 60,
- *    relay2_watts    numeric default 100,
- *    tariff_per_kwh  numeric default 0.12,
- *    currency        text    default 'USD'
- *  );
- *  insert into power_settings (id) values (1);
- *
- *  ── Supabase Row Level Security (optional but recommended) ──────────────────
- *  Enable RLS on all tables, then add policies:
- *  For sensor_readings: allow INSERT/SELECT with anon key
- *  For device_controls: allow SELECT/UPDATE with anon key
- *  For power_settings:  allow SELECT/UPDATE with anon key
+ *  FIREBASE SETUP (Firestore):
+ *  - Collection `sensor_readings` (documents with created_at, ldr_value, relay1_state, relay2_state)
+ *  - Collection `device_controls` with document id `1`
+ *  - Collection `power_settings` with document id `1`
  *
  *  ── Environment Variables (.env.local) ─────────────────────────────────────
- *  NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
- *  NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
+ *  NEXT_PUBLIC_FIREBASE_API_KEY=...
+ *  NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=...
+ *  NEXT_PUBLIC_FIREBASE_PROJECT_ID=...
+ *  NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET=...
+ *  NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=...
+ *  NEXT_PUBLIC_FIREBASE_APP_ID=...
  * ═══════════════════════════════════════════════════════════════════════════════
  */
 
 import { useEffect, useState, useCallback, useRef } from "react";
-import { createClient, RealtimeChannel } from "@supabase/supabase-js";
-
-// ── Supabase client ────────────────────────────────────────────────────────────
-const SUPABASE_URL      = process.env.NEXT_PUBLIC_SUPABASE_URL      ?? "https://your-project.supabase.co";
-const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "your-anon-key";
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+import {
+  collection,
+  doc,
+  getDocs,
+  limit,
+  onSnapshot,
+  orderBy,
+  query,
+  updateDoc,
+} from "firebase/firestore";
+import { db } from "@/lib/firebase";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 interface SensorReading {
-  id: number;
+  id: string | number;
   created_at: string;
   ldr_value: number;
   relay1_state: boolean;
@@ -90,6 +63,19 @@ interface PowerSettings {
 
 // ── Utility ────────────────────────────────────────────────────────────────────
 const p2 = (n: number) => String(n).padStart(2, "0");
+const toIsoString = (value: unknown): string => {
+  if (typeof value === "string") return value;
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    "toDate" in value &&
+    typeof (value as { toDate: () => Date }).toDate === "function"
+  ) {
+    return (value as { toDate: () => Date }).toDate().toISOString();
+  }
+  if (value instanceof Date) return value.toISOString();
+  return new Date().toISOString();
+};
 
 function calcPower(readings: SensorReading[], ps: PowerSettings) {
   if (readings.length < 2) return { kwh: 0, cost: 0, r1h: 0, r2h: 0 };
@@ -224,65 +210,89 @@ export default function Dashboard() {
     watchdogRef.current = setTimeout(() => setOnline(false), 30_000);
   }, []);
 
-  // ── Initial load ──────────────────────────────────────────────────────────
-  const fetchAll = useCallback(async () => {
-    const [{ data: rows, error: rowErr }, { data: ctrl }, { data: ps }] = await Promise.all([
-      supabase.from("sensor_readings").select("*").order("created_at", { ascending: false }).limit(60),
-      supabase.from("device_controls").select("*").eq("id", 1).single(),
-      supabase.from("power_settings").select("*").eq("id", 1).single(),
-    ]);
+  // ── Realtime subscription ─────────────────────────────────────────────────
+  useEffect(() => {
+    void getDocs(query(collection(db, "sensor_readings"), orderBy("created_at", "desc"), limit(60))).then((rowsSnap) => {
+      const rows = rowsSnap.docs.map((readingDoc) => {
+        const data = readingDoc.data();
+        return {
+          id: data.id ?? readingDoc.id,
+          created_at: toIsoString(data.created_at),
+          ldr_value: Number(data.ldr_value ?? 0),
+          relay1_state: Boolean(data.relay1_state),
+          relay2_state: Boolean(data.relay2_state),
+        } as SensorReading;
+      });
 
-    if (!rowErr && rows?.length) {
+      if (!rows.length) return;
       setLatest(rows[0]);
       setHistory([...rows].reverse());
       setOnline(true);
       setLastSeen(new Date(rows[0].created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }));
       resetWatchdog();
-    }
-    if (ctrl) {
-      setControls(ctrl);
-      setThrInput(String(ctrl.ldr_threshold));
-    }
-    if (ps) {
-      setPower(ps);
-      setPwrForm({ r1w: String(ps.relay1_watts), r2w: String(ps.relay2_watts), tariff: String(ps.tariff_per_kwh), currency: ps.currency });
-    }
-  }, [resetWatchdog]);
+    });
 
-  // ── Realtime subscription ─────────────────────────────────────────────────
-  useEffect(() => {
-    fetchAll();
+    const readingsQuery = query(collection(db, "sensor_readings"), orderBy("created_at", "desc"), limit(1));
+    const unsubReadings = onSnapshot(readingsQuery, (snapshot) => {
+      const latestDoc = snapshot.docs[0];
+      if (!latestDoc) return;
+      const data = latestDoc.data();
+      const row = {
+        id: data.id ?? latestDoc.id,
+        created_at: toIsoString(data.created_at),
+        ldr_value: Number(data.ldr_value ?? 0),
+        relay1_state: Boolean(data.relay1_state),
+        relay2_state: Boolean(data.relay2_state),
+      } as SensorReading;
 
-    const channel: RealtimeChannel = supabase.channel("esp32-live")
-      .on("postgres_changes", { event: "INSERT", schema: "public", table: "sensor_readings" }, (payload) => {
-        const row = payload.new as SensorReading;
-        setLatest(row);
-        setHistory(prev => [...prev.slice(-59), row]);
-        setOnline(true);
-        setLastSeen(new Date(row.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }));
-        resetWatchdog();
-      })
-      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "device_controls" }, (payload) => {
-        setControls(payload.new as DeviceControls);
-      })
-      .subscribe((status) => {
-        if (status === "SUBSCRIBED") console.log("[Realtime] connected to esp32-live channel");
+      setLatest(row);
+      setHistory((prev) => {
+        if (prev[prev.length - 1]?.id === row.id) return prev;
+        return [...prev.slice(-59), row];
       });
+      setOnline(true);
+      setLastSeen(new Date(row.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }));
+      resetWatchdog();
+    });
+
+    const unsubControls = onSnapshot(doc(db, "device_controls", "1"), (snapshot) => {
+      if (snapshot.exists()) {
+        const nextControls = snapshot.data() as DeviceControls;
+        setControls(nextControls);
+        setThrInput(String(nextControls.ldr_threshold));
+      }
+    });
+
+    const unsubPower = onSnapshot(doc(db, "power_settings", "1"), (snapshot) => {
+      if (snapshot.exists()) {
+        const nextPower = snapshot.data() as PowerSettings;
+        setPower(nextPower);
+        setPwrForm({
+          r1w: String(nextPower.relay1_watts),
+          r2w: String(nextPower.relay2_watts),
+          tariff: String(nextPower.tariff_per_kwh),
+          currency: nextPower.currency,
+        });
+      }
+    });
 
     return () => {
-      supabase.removeChannel(channel);
+      unsubReadings();
+      unsubControls();
+      unsubPower();
       if (watchdogRef.current) clearTimeout(watchdogRef.current);
     };
-  }, [fetchAll, resetWatchdog]);
+  }, [resetWatchdog]);
 
   // ── Write helpers ─────────────────────────────────────────────────────────
   const patchCtrl = async (data: Partial<DeviceControls>) => {
-    const { error } = await supabase
-      .from("device_controls")
-      .update({ ...data, updated_at: new Date().toISOString() })
-      .eq("id", 1);
-    if (!error) setControls(p => p ? { ...p, ...data } : p);
-    return !error;
+    try {
+      await updateDoc(doc(db, "device_controls", "1"), { ...data, updated_at: new Date().toISOString() });
+      setControls(p => p ? { ...p, ...data } : p);
+      return true;
+    } catch {
+      return false;
+    }
   };
 
   const toggleR1 = async () => {
@@ -308,7 +318,7 @@ export default function Dashboard() {
     setSchedSaving(true);
     const ok = await patchCtrl({ on_hour: oh, on_min: om, off_hour: fh, off_min: fm, schedule_set: true, relay1_manual: false });
     setSchedSaving(false);
-    setSchedMsg({ ok, text: ok ? "Schedule pushed to device!" : "Save failed — check Supabase." });
+    setSchedMsg({ ok, text: ok ? "Schedule pushed to device!" : "Save failed — check Firebase." });
     setTimeout(() => setSchedMsg(null), 4000);
   };
 
@@ -328,10 +338,14 @@ export default function Dashboard() {
     const r1w = parseFloat(pwrForm.r1w), r2w = parseFloat(pwrForm.r2w), tariff = parseFloat(pwrForm.tariff);
     if ([r1w, r2w, tariff].some(isNaN)) return;
     setPwrSaving(true);
-    const { error } = await supabase.from("power_settings")
-      .update({ relay1_watts: r1w, relay2_watts: r2w, tariff_per_kwh: tariff, currency: pwrForm.currency })
-      .eq("id", 1);
-    if (!error) setPower({ relay1_watts: r1w, relay2_watts: r2w, tariff_per_kwh: tariff, currency: pwrForm.currency });
+    try {
+      await updateDoc(doc(db, "power_settings", "1"), { relay1_watts: r1w, relay2_watts: r2w, tariff_per_kwh: tariff, currency: pwrForm.currency });
+      setPower({ relay1_watts: r1w, relay2_watts: r2w, tariff_per_kwh: tariff, currency: pwrForm.currency });
+    } catch {
+      // Keep edit mode open on write failure.
+      setPwrSaving(false);
+      return;
+    }
     setPwrSaving(false);
     setPwrEditing(false);
   };
@@ -391,7 +405,7 @@ export default function Dashboard() {
             </div>
             <div>
               <div className="text-sm font-bold tracking-wide text-white">LightControl</div>
-              <div className="text-[10px] text-white/30 mono">ESP32 · DS1302 · Supabase Live</div>
+              <div className="text-[10px] text-white/30 mono">ESP32 · DS1302 · Firebase Live</div>
             </div>
           </div>
 
@@ -804,7 +818,7 @@ export default function Dashboard() {
         {/* ── Footer ── */}
         <footer className="flex flex-col sm:flex-row justify-between items-center gap-1 text-[10px] mono text-white/15 pt-4 border-t border-white/[0.05]">
           <span>GPIO 26=R1 · GPIO 27=R2 · GPIO 34=LDR · SDA=21 SCL=22</span>
-          <span>DAT=17 CLK=16 RST=5 · DS1302 RTC · Supabase Realtime</span>
+          <span>DAT=17 CLK=16 RST=5 · DS1302 RTC · Firebase Realtime</span>
         </footer>
       </main>
     </div>
